@@ -103,9 +103,9 @@ def fill_inner_boundary_ivar(state, dx, N, r_is_logarithmic, ivar) :
                               + 0.5 * (dist2 * dist2) * d2fdx2_a ) * var_parity            
     else : 
         # Apply a simple reflection of the values
-        boundary_cells = np.array([(ivar)*N, (ivar)*N+1, (ivar)*N+2])
+        boundary_cells = np.array([(ivar)*N + ig  for ig in range(num_ghosts)])
         for count, ix in enumerate(boundary_cells) :
-            offset = 5 - 2*count
+            offset = 2*num_ghosts-1 - 2*count
             state[ix] = state[ix + offset] * var_parity
 
 # fills the outer boundary ghosts at large r
@@ -126,7 +126,7 @@ def fill_outer_boundary_ivar(state, dx, N, r_is_logarithmic, ivar) :
             state[ix]    = state[ix + offset]            
         else :
             # use asymptotic powers
-            state[ix]    = state[ix + offset] * ((r_linear[N - 3 + count] / r_linear[N - 4]) 
+            state[ix]    = state[ix + offset] * ((r_linear[N - num_ghosts + count] / r_linear[N - num_ghosts-1]) 
                                                                          ** asymptotic_power[ivar])
 
 # Manage the state vector (for readability mainly)
