@@ -5,55 +5,46 @@ import numpy as np
 import time
 
 # homemade code
-from myparams import *
 from source.uservariables import *
+from source.gridfunctions import *
 from source.fourthorderderivatives import *
+from source.logderivatives import *
 from source.tensoralgebra import *
 from source.mymatter import *
-from source.bssn_rhs import *
-
+from source.bssnrhs import *
+    
 # function that returns the rhs for each of the field vars
-# Assumes 3 ghost cells at either end of the vector of values
+# see further details in https://github.com/GRChombo/engrenage/wiki/Useful-code-background
+def get_rhs(t_i, current_state, R, N_r, r_is_logarithmic, eta, progress_bar, time_state) :
 
-# klein gordon eqn
-def get_rhs(vars_vec, t_i, p, q) :
-
-    start = time.time()
+    # Uncomment for timing and tracking progress
+    # start_time = time.time()
+    
+    # Set up grid values
+    dx, N, r, logarithmic_dr = setup_grid(R, N_r, r_is_logarithmic)
+    
+    # predefine some userful quantities
+    oneoverlogdr = 1.0 / logarithmic_dr
+    oneoverlogdr2 = oneoverlogdr * oneoverlogdr
+    oneoverdx  = 1.0 / dx
+    oneoverdxsquared = oneoverdx * oneoverdx
     
     # this is where the rhs will go
-    rhs = np.zeros_like(vars_vec) 
+    rhs = np.zeros_like(current_state) 
     
     ####################################################################################################
-    #unpackage the vector for readability - these are the vectors of values across r values at time t_i
+    #unpackage the state vector for readability - these are the vectors of values across r values at time t_i
     # see uservariables.py for naming conventions
     
-    # Scalar field vars
-    u    = vars_vec[idx_u * N : (idx_u + 1) * N]
-    v    = vars_vec[idx_v * N : (idx_v + 1) * N]
+    # Unpack variables from current_state - see uservariables.py
+    u, v , phi, hrr, htt, hpp, K, arr, att, app, lambdar, shiftr, br, lapse = unpack_state(current_state, N_r) 
     
-    # Conformal factor and rescaled perturbation to spatial metric
-    phi    = vars_vec[idx_phi * N : (idx_phi + 1) * N]
-    hrr    = vars_vec[idx_hrr * N : (idx_hrr + 1) * N]
-    htt    = vars_vec[idx_htt * N : (idx_htt + 1) * N]
-    hpp    = vars_vec[idx_hpp * N : (idx_hpp + 1) * N]
-
-    # Mean curvature and rescaled perturbation to traceless A_ij
-    K      = vars_vec[idx_K   * N : (idx_K   + 1) * N]
-    arr    = vars_vec[idx_arr * N : (idx_arr + 1) * N]
-    att    = vars_vec[idx_att * N : (idx_att + 1) * N]
-    app    = vars_vec[idx_app * N : (idx_app + 1) * N]
-
-    # Gamma^x, shift and lapse
-    lambdar    = vars_vec[idx_lambdar * N : (idx_lambdar + 1) * N]
-    shiftr     = vars_vec[idx_shiftr  * N : (idx_shiftr  + 1) * N]
-    br         = vars_vec[idx_br      * N : (idx_br      + 1) * N]
-    lapse      = vars_vec[idx_lapse   * N : (idx_lapse   + 1) * N]    
+    # t0 = time.time()
+    # print("grid and var setup done in ", t0-start_time)
 
     ####################################################################################################
     # enforce that the determinant of \bar gamma_ij is equal to that of flat space in spherical coords
     # (note that trace of \bar A_ij = 0 is enforced dynamically below as in Etienne https://arxiv.org/abs/1712.07658v2)
-
-    shiftrL   = np.zeros_like(shiftr)
     
     # iterate over the grid (vector)
     for ix in range(N) :
@@ -63,43 +54,137 @@ def get_rhs(vars_vec, t_i, p, q) :
         h[i_r][i_r] = hrr[ix]
         h[i_t][i_t] = htt[ix]
         h[i_p][i_p] = hpp[ix]
-        determinant = get_rescaled_determinant_gamma(h)
-        hrr[ix] = hrr[ix]/determinant
-        htt[ix] = hrr[ix]/determinant
-        hpp[ix] = hrr[ix]/determinant
+        determinant = abs(get_rescaled_determinant_gamma(h))
         
-        # Also just for convenience work out the shift with lowered index
-        shiftrL[ix] = shiftr[ix] * hrr[ix] * np.exp(4.0*phi[ix])
-    
+        hrr[ix] = (1.0 + hrr[ix])/np.power(determinant,1./3) - 1.0
+        htt[ix] = (1.0 + htt[ix])/np.power(determinant,1./3) - 1.0
+        hpp[ix] = (1.0 + hpp[ix])/np.power(determinant,1./3) - 1.0
+
+    # t1 = time.time()
+    # print("correcting determinant done in ", t1 - t0)
+        
     ####################################################################################################
 
-    # get the various derivs that we need to evolve things in vector form
-    # second derivatives
-    d2udx2     = get_d2fdx2(u)
-    d2phidx2   = get_d2fdx2(phi)
-    d2hrrdx2   = get_d2fdx2(hrr)
-    d2httdx2   = get_d2fdx2(htt)
-    d2hppdx2   = get_d2fdx2(hpp)
-    d2lapsedx2 = get_d2fdx2(lapse)
-    d2shiftrdx2 = get_d2fdx2(shiftr)
+    # get the various derivs that we need to evolve things
+    if(r_is_logarithmic) : #take logarithmic derivatives
+        
+        # second derivatives
+        d2udx2     = get_logd2fdx2(u, oneoverlogdr2)
+        d2phidx2   = get_logd2fdx2(phi, oneoverlogdr2)
+        d2hrrdx2   = get_logd2fdx2(hrr, oneoverlogdr2)
+        d2httdx2   = get_logd2fdx2(htt, oneoverlogdr2)
+        d2hppdx2   = get_logd2fdx2(hpp, oneoverlogdr2)    
+        d2lapsedx2   = get_logd2fdx2(lapse, oneoverlogdr2) 
+        d2shiftrdx2   = get_logd2fdx2(shiftr, oneoverlogdr2) 
+        
+        # first derivatives        
+        dudx       = get_logdfdx(u, oneoverlogdr)
+        dvdx       = get_logdfdx(v, oneoverlogdr)
+        dphidx     = get_logdfdx(phi, oneoverlogdr)
+        dhrrdx     = get_logdfdx(hrr, oneoverlogdr)
+        dhttdx     = get_logdfdx(htt, oneoverlogdr)
+        dhppdx     = get_logdfdx(hpp, oneoverlogdr)
+        darrdx     = get_logdfdx(arr, oneoverlogdr)
+        dattdx     = get_logdfdx(att, oneoverlogdr)
+        dappdx     = get_logdfdx(app, oneoverlogdr)
+        dKdx       = get_logdfdx(K, oneoverlogdr)
+        dlambdardx = get_logdfdx(lambdar, oneoverlogdr)
+        dbrdx      = get_logdfdx(br, oneoverlogdr)
+        dshiftrdx  = get_logdfdx(shiftr, oneoverlogdr)
+        dlapsedx   = get_logdfdx(lapse, oneoverlogdr)
 
-    # first derivatives
-    dudx       = get_dfdx(u)
-    dvdx       = get_dfdx(v)
-    dphidx     = get_dfdx(phi)
-    dhrrdx     = get_dfdx(hrr)
-    dhttdx     = get_dfdx(htt)
-    dhppdx     = get_dfdx(hpp)
-    darrdx     = get_dfdx(arr)
-    dattdx     = get_dfdx(att)
-    dappdx     = get_dfdx(app)
-    dKdx       = get_dfdx(K)
-    dlambdardx = get_dfdx(lambdar)
-    dshiftrdx  = get_dfdx(shiftr)
-    dshiftrLdx = get_dfdx(shiftrL)
-    dbrdx      = get_dfdx(br)
-    dlapsedx   = get_dfdx(lapse)
+        # first derivatives - advec left and right
+        dudx_advec_L       = get_logdfdx_advec_L(u, oneoverlogdr)
+        dvdx_advec_L       = get_logdfdx_advec_L(v, oneoverlogdr)
+        dphidx_advec_L     = get_logdfdx_advec_L(phi, oneoverlogdr)
+        dhrrdx_advec_L     = get_logdfdx_advec_L(hrr, oneoverlogdr)
+        dhttdx_advec_L     = get_logdfdx_advec_L(htt, oneoverlogdr)
+        dhppdx_advec_L     = get_logdfdx_advec_L(hpp, oneoverlogdr)
+        darrdx_advec_L     = get_logdfdx_advec_L(arr, oneoverlogdr)
+        dattdx_advec_L     = get_logdfdx_advec_L(att, oneoverlogdr)
+        dappdx_advec_L     = get_logdfdx_advec_L(app, oneoverlogdr)
+        dKdx_advec_L       = get_logdfdx_advec_L(K, oneoverlogdr)
+        dlambdardx_advec_L = get_logdfdx_advec_L(lambdar, oneoverlogdr)
+        dshiftrdx_advec_L  = get_logdfdx_advec_L(shiftr, oneoverlogdr)
+        dbrdx_advec_L      = get_logdfdx_advec_L(br, oneoverlogdr)
+        dlapsedx_advec_L   = get_logdfdx_advec_L(lapse, oneoverlogdr)
     
+        dudx_advec_R       = get_logdfdx_advec_R(u, oneoverlogdr)
+        dvdx_advec_R       = get_logdfdx_advec_R(v, oneoverlogdr)
+        dphidx_advec_R     = get_logdfdx_advec_R(phi, oneoverlogdr)
+        dhrrdx_advec_R     = get_logdfdx_advec_R(hrr, oneoverlogdr)
+        dhttdx_advec_R     = get_logdfdx_advec_R(htt, oneoverlogdr)
+        dhppdx_advec_R     = get_logdfdx_advec_R(hpp, oneoverlogdr)
+        darrdx_advec_R     = get_logdfdx_advec_R(arr, oneoverlogdr)
+        dattdx_advec_R     = get_logdfdx_advec_R(att, oneoverlogdr)
+        dappdx_advec_R     = get_logdfdx_advec_R(app, oneoverlogdr)
+        dKdx_advec_R       = get_logdfdx_advec_R(K, oneoverlogdr)
+        dlambdardx_advec_R = get_logdfdx_advec_R(lambdar, oneoverlogdr)
+        dshiftrdx_advec_R  = get_logdfdx_advec_R(shiftr, oneoverlogdr)
+        dbrdx_advec_R      = get_logdfdx_advec_R(br, oneoverlogdr)
+        dlapsedx_advec_R   = get_logdfdx_advec_R(lapse, oneoverlogdr)         
+        
+    else :
+        
+        # second derivatives
+        d2udx2     = get_d2fdx2(u, oneoverdxsquared)
+        d2phidx2   = get_d2fdx2(phi, oneoverdxsquared)
+        d2hrrdx2   = get_d2fdx2(hrr, oneoverdxsquared)
+        d2httdx2   = get_d2fdx2(htt, oneoverdxsquared)
+        d2hppdx2   = get_d2fdx2(hpp, oneoverdxsquared)
+        d2lapsedx2 = get_d2fdx2(lapse, oneoverdxsquared)
+        d2shiftrdx2 = get_d2fdx2(shiftr, oneoverdxsquared)
+    
+        # first derivatives
+        dudx       = get_dfdx(u, oneoverdx)
+        dvdx       = get_dfdx(v, oneoverdx)
+        dphidx     = get_dfdx(phi, oneoverdx)
+        dhrrdx     = get_dfdx(hrr, oneoverdx)
+        dhttdx     = get_dfdx(htt, oneoverdx)
+        dhppdx     = get_dfdx(hpp, oneoverdx)
+        darrdx     = get_dfdx(arr, oneoverdx)
+        dattdx     = get_dfdx(att, oneoverdx)
+        dappdx     = get_dfdx(app, oneoverdx)
+        dKdx       = get_dfdx(K, oneoverdx)
+        dlambdardx = get_dfdx(lambdar, oneoverdx)
+        dshiftrdx  = get_dfdx(shiftr, oneoverdx)
+        dbrdx      = get_dfdx(br, oneoverdx)
+        dlapsedx   = get_dfdx(lapse, oneoverdx)
+    
+        # first derivatives - advec left and right
+        dudx_advec_L       = get_dfdx_advec_L(u, oneoverdx)
+        dvdx_advec_L       = get_dfdx_advec_L(v, oneoverdx)
+        dphidx_advec_L     = get_dfdx_advec_L(phi, oneoverdx)
+        dhrrdx_advec_L     = get_dfdx_advec_L(hrr, oneoverdx)
+        dhttdx_advec_L     = get_dfdx_advec_L(htt, oneoverdx)
+        dhppdx_advec_L     = get_dfdx_advec_L(hpp, oneoverdx)
+        darrdx_advec_L     = get_dfdx_advec_L(arr, oneoverdx)
+        dattdx_advec_L     = get_dfdx_advec_L(att, oneoverdx)
+        dappdx_advec_L     = get_dfdx_advec_L(app, oneoverdx)
+        dKdx_advec_L       = get_dfdx_advec_L(K, oneoverdx)
+        dlambdardx_advec_L = get_dfdx_advec_L(lambdar, oneoverdx)
+        dshiftrdx_advec_L  = get_dfdx_advec_L(shiftr, oneoverdx)
+        dbrdx_advec_L      = get_dfdx_advec_L(br, oneoverdx)
+        dlapsedx_advec_L   = get_dfdx_advec_L(lapse, oneoverdx)
+    
+        dudx_advec_R       = get_dfdx_advec_R(u, oneoverdx)
+        dvdx_advec_R       = get_dfdx_advec_R(v, oneoverdx)
+        dphidx_advec_R     = get_dfdx_advec_R(phi, oneoverdx)
+        dhrrdx_advec_R     = get_dfdx_advec_R(hrr, oneoverdx)
+        dhttdx_advec_R     = get_dfdx_advec_R(htt, oneoverdx)
+        dhppdx_advec_R     = get_dfdx_advec_R(hpp, oneoverdx)
+        darrdx_advec_R     = get_dfdx_advec_R(arr, oneoverdx)
+        dattdx_advec_R     = get_dfdx_advec_R(att, oneoverdx)
+        dappdx_advec_R     = get_dfdx_advec_R(app, oneoverdx)
+        dKdx_advec_R       = get_dfdx_advec_R(K, oneoverdx)
+        dlambdardx_advec_R = get_dfdx_advec_R(lambdar, oneoverdx)
+        dshiftrdx_advec_R  = get_dfdx_advec_R(shiftr, oneoverdx)
+        dbrdx_advec_R      = get_dfdx_advec_R(br, oneoverdx)
+        dlapsedx_advec_R   = get_dfdx_advec_R(lapse, oneoverdx)  
+
+    # t2 = time.time()
+    # print("derivs found in ", t2 - t1)
+        
     ####################################################################################################
     
     # make containers for rhs values
@@ -121,8 +206,11 @@ def get_rhs(vars_vec, t_i, p, q) :
     ####################################################################################################    
     
     # now iterate over the grid (vector) and calculate the rhs values
+    # note that we do the ghost cells separately below
     for ix in range(num_ghosts, N-num_ghosts) :
-
+        
+        #t0A = time.time()
+        
         # where am I?
         r_here = r[ix]
         
@@ -148,165 +236,201 @@ def get_rhs(vars_vec, t_i, p, q) :
         a[i_t][i_t] = att[ix]
         a[i_p][i_p] = app[ix]
         
+        # t1A = time.time()
+        # print("Assign vars done in ", t1A - t0A)
+        
         # Calculate some useful quantities
+        # (mostly from tensoralgebra.py)
         ########################################################
         
-        # \hat \Gamma^i_jk
-        flat_chris = get_flat_spherical_chris(r_here)
-        
-        # rescaled \bar\gamma_ij
+        # rescaled \bar\gamma_ij and \bar\gamma^ij
         r_gamma_LL = get_rescaled_metric(h)
+        r_gamma_UU = get_rescaled_inverse_metric(h)
         
-        # (unscaled) \bar\gamma_ij and \bar\gamma^ij
-        bar_gamma_LL = get_metric(r_here, h)
-        bar_gamma_UU = get_inverse_metric(r_here, h)
+        # \bar A_ij, \bar A^ij and the trace A_i^i, then Asquared = \bar A_ij \bar A^ij
+        a_UU = get_a_UU(a, r_gamma_UU)
+        traceA   = get_trace_A(a, r_gamma_UU)
+        Asquared = get_Asquared(a, r_gamma_UU)
         
-        # \bar A_ij and its trace, \bar A_ij \bar A^ij
-        bar_A_LL = get_A_LL(r_here, a)
-        bar_A_UU = get_A_UU(bar_A_LL, bar_gamma_UU)
-        traceA   = get_trace_A(r_here, a, bar_gamma_UU)
-        Asquared = get_Asquared(r_here, a, bar_gamma_UU)
+        # The rescaled connections Delta^i, Delta^i_jk and Delta_ijk
+        rDelta_U, rDelta_ULL, rDelta_LLL  = get_rescaled_connection(r_here, r_gamma_UU, 
+                                                                    r_gamma_LL, h, dhdr)
+        # rescaled \bar \Gamma^i_jk
+        r_conformal_chris = get_rescaled_conformal_chris(rDelta_ULL, r_here)
+        
+        # rescaled Ricci tensor
+        rbar_Rij = get_rescaled_ricci_tensor(r_here, h, dhdr, d2hdr2, lambdar[ix], dlambdardx[ix],
+                                             rDelta_U, rDelta_ULL, rDelta_LLL, 
+                                             r_gamma_UU, r_gamma_LL)
         
         # This is the conformal divergence of the shift \bar D_i \beta^i
-        # We use the fact that the determinant of the conformal metric is 
-        # fixed to that of the flat space metric in spherical coords
-        bar_div_shift = dshiftrdx[ix] + 2.0 / r_here * shiftr[ix]
-        # This is D^r (\bar D_i \beta^i) note the raised index of r
-        bar_D_div_shift = bar_gamma_UU[i_r][i_r] * (d2shiftrdx2[ix] 
-                                                    + 2.0 / r_here * dshiftrdx[ix] 
-                                                    - 2.0 / r_here / r_here * shiftr[ix])
+        # Use the fact that the conformal metric determinant is \hat \gamma = r^4 sin2theta
+        bar_div_shift =  (dshiftrdx[ix] + 2.0 * shiftr[ix] / r_here)
         
-        # Same trick for \bar D_k \bar D^k lapse
-        bar_D2_lapse = bar_gamma_UU[i_r][i_r] * (d2lapsedx2[ix]
-                                                + dlapsedx[ix] * dhrrdx[ix] * bar_gamma_UU[i_r][i_r]
-                                                + 2.0 / r_here * dlapsedx[ix])
-        
-        # This is \hat D_i shift_j (note lowered indices)
-        hat_D_shift = np.zeros_like(rank_2_spatial_tensor)
-        hat_D_shift[i_r][i_r] = dshiftrLdx[ix]
-        hat_D_shift[i_t][i_t] = - flat_chris[i_r][i_t][i_t] * shiftrL[ix]
-        hat_D_shift[i_p][i_p] = - flat_chris[i_r][i_p][i_p] * shiftrL[ix]
-        # \bar \gamma^ij \hat D_i \hat D_j shift^r
-        hat_D2_shift = bar_gamma_UU[i_r][i_r] * d2shiftrdx2[ix]
+        # t2A = time.time()
+        # print("Tensor quantities done in ", t2A - t1A)
                 
-        # The connections Delta^i, Delta^i_jk and Delta_ijk
-        Delta_U, Delta_ULL, Delta_LLL  = get_connection(r_here, bar_gamma_UU, bar_gamma_LL, h, dhdr)
-        bar_Rij = get_ricci_tensor(r_here, h, dhdr, d2hdr2, lambdar[ix], dlambdardx[ix], 
-                                   Delta_U, Delta_ULL, Delta_LLL, bar_gamma_UU, bar_gamma_LL)
-        
-        # Matter sources
-        matter_rho            = get_rho( u[ix], dudx[ix], v[ix], bar_gamma_UU, em4phi )
-        matter_Si             = get_Si(  u[ix], dudx[ix], v[ix], bar_gamma_UU, em4phi )
-        matter_S, matter_Sij  = get_Sij( u[ix], dudx[ix], v[ix], bar_gamma_UU, em4phi,
-                                             bar_gamma_LL)
+        # Matter sources - see mymatter.py
+        matter_rho             = get_rho( u[ix], dudx[ix], v[ix], r_gamma_UU, em4phi )
+        matter_Si              = get_Si(  u[ix], dudx[ix], v[ix])
+        matter_S, matter_rSij  = get_rescaled_Sij( u[ix], dudx[ix], v[ix], r_gamma_UU, em4phi,
+                                             r_gamma_LL)
 
+        # t3A = time.time()
+        # print("Matter useful quantities done in ", t3A - t2A)
+        
         # End of: Calculate some useful quantities, now start RHS
         #########################################################
 
-        # Get the matter rhs
+        # Get the matter rhs - see mymatter.py
         rhs_u[ix], rhs_v[ix] = get_matter_rhs(u[ix], v[ix], dudx[ix], d2udx2[ix], 
-                                              bar_gamma_UU, em4phi, dphidx[ix], K[ix], lapse[ix], dlapsedx[ix])
+                                              r_gamma_UU, em4phi, dphidx[ix], 
+                                              K[ix], lapse[ix], dlapsedx[ix], r_conformal_chris)
 
-        # Add advection
-        rhs_u[ix] += shiftr[ix] * dudx[ix]
-        rhs_v[ix] += shiftr[ix] * dvdx[ix]
-        
-        # USEFUL DEBUG: check flat space result
-        #rhs_u[ix] = v[ix]
-        #rhs_v[ix] = d2udx2[ix]
-
-        # Get the bssn rhs - see bssn.py
+        # Get the bssn rhs - see bssnrhs.py
         rhs_phi[ix]     = get_rhs_phi(lapse[ix], K[ix], bar_div_shift)
         
-        rhs_h           = get_rhs_h(r_here, r_gamma_LL, lapse[ix], traceA, bar_div_shift, 
-                                    hat_D_shift, a)
+        rhs_h           = get_rhs_h(r_here, r_gamma_LL, lapse[ix], traceA, dshiftrdx[ix], shiftr[ix], 
+                                    bar_div_shift, a)
         
-        rhs_K[ix]       = get_rhs_K(lapse[ix], K[ix], Asquared, em4phi, bar_D2_lapse, 
-                                    dlapsedx[ix], dphidx[ix], bar_gamma_UU, matter_rho, matter_S)       
+        rhs_K[ix]       = get_rhs_K(lapse[ix], K[ix], Asquared, em4phi, d2lapsedx2[ix], dlapsedx[ix], 
+                                    r_conformal_chris, dphidx[ix], r_gamma_UU, matter_rho, matter_S)
         
-        rhs_a           = get_rhs_a(a, bar_div_shift, lapse[ix], K[ix], em4phi, bar_Rij,
-                                    r_here, Delta_ULL, bar_gamma_UU, bar_A_UU, bar_A_LL,
+        rhs_a           = get_rhs_a(r_here, a, bar_div_shift, lapse[ix], K[ix], em4phi, rbar_Rij,
+                                    r_conformal_chris, r_gamma_UU, r_gamma_LL,
                                     d2phidx2[ix], dphidx[ix], d2lapsedx2[ix], dlapsedx[ix], 
-                                    h, dhdr, d2hdr2, matter_Sij)
+                                    h, dhdr, d2hdr2, matter_rSij)
         
-        rhs_lambdar[ix] = get_rhs_lambdar(hat_D2_shift, Delta_U, Delta_ULL, bar_div_shift, 
-                                          bar_D_div_shift, bar_gamma_UU, bar_A_UU, lapse[ix], dlapsedx[ix], 
-                                          dphidx[ix], dKdx[ix], matter_Si)
+        rhs_lambdar[ix] = get_rhs_lambdar(r_here, d2shiftrdx2[ix], dshiftrdx[ix], shiftr[ix], h, dhdr,
+                                          rDelta_U, rDelta_ULL, bar_div_shift,
+                                          r_gamma_UU, a_UU, lapse[ix],
+                                          dlapsedx[ix], dphidx[ix], dKdx[ix], matter_Si)
         
-        # Add advection to time derivatives
-        rhs_phi[ix]     += shiftr[ix] * dphidx[ix]
-        rhs_hrr[ix]     = rhs_h[i_r][i_r] + shiftr[ix] * dhrrdx[ix] - 2.0 * hrr[ix] * dshiftrdx[ix]
-        rhs_htt[ix]     = rhs_h[i_t][i_t] + shiftr[ix] * dhttdx[ix]      
-        rhs_hpp[ix]     = rhs_h[i_p][i_p] + shiftr[ix] * dhppdx[ix]       
-        rhs_K[ix]       += shiftr[ix] * dKdx[ix]
-        rhs_arr[ix]     = rhs_a[i_r][i_r] + shiftr[ix] * darrdx[ix] - 2.0 * arr[ix] * dshiftrdx[ix] 
-        rhs_att[ix]     = rhs_a[i_t][i_t] + shiftr[ix] * dattdx[ix]        
-        rhs_app[ix]     = rhs_a[i_p][i_p] + shiftr[ix] * dappdx[ix] 
-        rhs_lambdar[ix] += shiftr[ix] * dlambdardx[ix] - lambdar[ix] * dshiftrdx[ix]       
-
         # Set the gauge vars rhs
+        # eta is the 1+log slicing damping coefficient - of order 1/M_adm of spacetime        
         rhs_br[ix]     = 0.75 * rhs_lambdar[ix] - eta * br[ix]
         rhs_shiftr[ix] = br[ix]
-        rhs_lapse[ix]  = - 2.0 * lapse[ix] * K[ix] + shiftr[ix] * dlapsedx[ix]
+        rhs_lapse[ix]  = - 2.0 * lapse[ix] * K[ix]        
 
+        # t4A = time.time()
+        # print("BSSN rhs done in ", t4A - t3A)
         
+        # Add advection to time derivatives (this is the bit coming from the Lie derivative   
+        if (shiftr[ix] > 0) :
+            rhs_u[ix]       += shiftr[ix] * dudx_advec_R[ix]
+            rhs_v[ix]       += shiftr[ix] * dvdx_advec_R[ix]
+            rhs_phi[ix]     += shiftr[ix] * dphidx_advec_R[ix]
+            rhs_hrr[ix]     = (rhs_h[i_r][i_r] + shiftr[ix] * dhrrdx_advec_R[ix] 
+                               + 2.0 * hrr[ix] * dshiftrdx[ix])
+            rhs_htt[ix]     = (rhs_h[i_t][i_t] + shiftr[ix] * dhttdx_advec_R[ix]
+                               + 2.0 * shiftr[ix] * 1.0/r_here * h[i_t][i_t]) # additional advection terms from rescaling
+            rhs_hpp[ix]     = (rhs_h[i_p][i_p] + shiftr[ix] * dhppdx_advec_R[ix]
+                               + 2.0 * shiftr[ix] * 1.0/r_here * h[i_p][i_p]) # additional advection terms from rescaling
+            rhs_K[ix]       += shiftr[ix] * dKdx_advec_R[ix]
+            rhs_arr[ix]     = (rhs_a[i_r][i_r] + shiftr[ix] * darrdx_advec_R[ix] 
+                               + 2.0 * arr[ix] * dshiftrdx[ix])
+            rhs_att[ix]     = (rhs_a[i_t][i_t] + shiftr[ix] * dattdx_advec_R[ix]
+                               + 2.0 * shiftr[ix] * 1.0/r_here * a[i_t][i_t]) # additional advection terms from rescaling
+            rhs_app[ix]     = (rhs_a[i_p][i_p] + shiftr[ix] * dappdx_advec_R[ix]
+                               + 2.0 * shiftr[ix] * 1.0/r_here * a[i_p][i_p]) # additional advection terms from rescaling
+            rhs_lambdar[ix] += (shiftr[ix] * dlambdardx_advec_R[ix] 
+                                - lambdar[ix] * dshiftrdx[ix])
+            # NB optional to add advection to lapse and shift vars
+            # rhs_lapse       += shiftr[ix] * dlapsedx_advec_R[ix]
+            # rhs_br[ix]      += 0.0
+            # rhs_shiftr[ix]  += 0.0
+            
+        else : 
+            rhs_u[ix]       += shiftr[ix] * dudx_advec_L[ix]
+            rhs_v[ix]       += shiftr[ix] * dvdx_advec_L[ix]
+            rhs_phi[ix]     += shiftr[ix] * dphidx_advec_L[ix]
+            rhs_hrr[ix]     = (rhs_h[i_r][i_r] + shiftr[ix] * dhrrdx_advec_L[ix]
+                               + 2.0 * hrr[ix] * dshiftrdx[ix])
+            rhs_htt[ix]     = (rhs_h[i_t][i_t] + shiftr[ix] * dhttdx_advec_L[ix]
+                               + 2.0 * shiftr[ix] * 1.0/r_here * h[i_t][i_t]) # additional advection terms from rescaling
+            rhs_hpp[ix]     = (rhs_h[i_p][i_p] + shiftr[ix] * dhppdx_advec_L[ix]
+                               + 2.0 * shiftr[ix] * 1.0/r_here * h[i_p][i_p]) # additional advection terms from rescaling
+            rhs_K[ix]       += shiftr[ix] * dKdx_advec_L[ix]
+            rhs_arr[ix]     = (rhs_a[i_r][i_r] + shiftr[ix] * darrdx_advec_L[ix] 
+                               + 2.0 * arr[ix] * dshiftrdx[ix])
+            rhs_att[ix]     = (rhs_a[i_t][i_t] + shiftr[ix] * dattdx_advec_L[ix]
+                               + 2.0 * shiftr[ix] * 1.0/r_here * a[i_t][i_t]) # additional advection terms from rescaling
+            rhs_app[ix]     = (rhs_a[i_p][i_p] + shiftr[ix] * dappdx_advec_L[ix]
+                               + 2.0 * shiftr[ix] * 1.0/r_here * a[i_p][i_p]) # additional advection terms from rescaling
+            rhs_lambdar[ix] += (shiftr[ix] * dlambdardx_advec_L[ix] 
+                                - lambdar[ix] * dshiftrdx[ix])
+            # NB optional to add advection to lapse and shift vars
+            # rhs_lapse       += shiftr[ix] * dlapsedx_advec_L[ix]            
+            # rhs_br[ix]      += 0.0
+            # rhs_shiftr[ix]  += 0.0
+
+        # t5A = time.time()
+        # print("Advection done in ", t5A - t4A)
+            
     # end of rhs iteration over grid points   
-    ####################################################################################################        
-        
-    #package up the rhs values into a vector like vars_vec for return 
-  
-    # Scalar field vars
-    rhs[idx_u * N : (idx_u + 1) * N] = rhs_u
-    rhs[idx_v * N : (idx_v + 1) * N] = rhs_v
+    # t3 = time.time()
+    # print("rhs iteration over grid done in ", t3 - t2)
     
-    # Conformal factor and rescaled perturbation to spatial metric
-    rhs[idx_phi * N : (idx_phi + 1) * N] = rhs_phi
-    rhs[idx_hrr * N : (idx_hrr + 1) * N] = rhs_hrr
-    rhs[idx_htt * N : (idx_htt + 1) * N] = rhs_htt
-    rhs[idx_hpp * N : (idx_hpp + 1) * N] = rhs_hpp
+    ####################################################################################################
 
-    # Mean curvature and rescaled perturbation to traceless A_ij
-    rhs[idx_K   * N : (idx_K   + 1) * N] = rhs_K
-    rhs[idx_arr * N : (idx_arr + 1) * N] = rhs_arr
-    rhs[idx_att * N : (idx_att + 1) * N] = rhs_att
-    rhs[idx_app * N : (idx_app + 1) * N] = rhs_app
-
-    # Gamma^x, shift and lapse
-    rhs[idx_lambdar * N : (idx_lambdar + 1) * N] = rhs_lambdar
-    rhs[idx_shiftr  * N : (idx_shiftr  + 1) * N] = rhs_shiftr
-    rhs[idx_br      * N : (idx_br      + 1) * N] = rhs_br
-    rhs[idx_lapse   * N : (idx_lapse   + 1) * N] = rhs_lapse
+    #package up the rhs values into a vector rhs (like current_state) for return - see uservariables.py
+    pack_state(rhs, N_r, rhs_u, rhs_v , rhs_phi, rhs_hrr, rhs_htt, rhs_hpp, 
+                     rhs_K, rhs_arr, rhs_att, rhs_app, rhs_lambdar, rhs_shiftr, rhs_br, rhs_lapse)
 
     #################################################################################################### 
             
-    # finally add Kreiss Oliger dissipation
-    diss = np.zeros_like(vars_vec) 
+    # finally add Kreiss Oliger dissipation which removed noise at frequency of grid resolution
+    sigma = 10.0 # kreiss-oliger damping coefficient, max_step should be limited to 0.1 R/N_r
+    
+    diss = np.zeros_like(current_state) 
     for ivar in range(0, NUM_VARS) :
-        diss[(ivar-1)*N:ivar*N] = get_dissipation(vars_vec[(ivar-1)*N:ivar*N])
+        ivar_values = current_state[(ivar)*N:(ivar+1)*N]
+        ivar_diss = np.zeros_like(ivar_values)
+        if(r_is_logarithmic) :
+            ivar_diss = get_logdissipation(ivar_values, oneoverlogdr, sigma)
+        else : 
+            ivar_diss = get_dissipation(ivar_values, oneoverdx, sigma)
+        diss[(ivar)*N:(ivar+1)*N] = ivar_diss
     rhs += diss
     
+    # t4 = time.time()
+    # print("KO diss done in ", t4 - t3)    
+    
     #################################################################################################### 
-        
-    # overwrite outer boundaries with extrapolation (zeroth order)
-    for ivar in range(0, NUM_VARS) :
-        boundary_cells = np.array([(ivar + 1)*N-3, (ivar + 1)*N-2, (ivar + 1)*N-1])
-        for count, ix in enumerate(boundary_cells) :
-            offset = -1 - count
-            rhs[ix]    = rhs[ix + offset]
+    
+    # see gridfunctions for these, or https://github.com/KAClough/BabyGRChombo/wiki/Useful-code-background
+    
+    # overwrite outer boundaries with extrapolation (order specified in uservariables.py)
+    fill_outer_boundary(current_state, dx, N, r_is_logarithmic)
 
     # overwrite inner cells using parity under r -> - r
-    for ivar in range(0, NUM_VARS) :
-        boundary_cells = np.array([(ivar)*N, (ivar)*N+1, (ivar)*N+2])
-        var_parity = parity[ivar]
-        for count, ix in enumerate(boundary_cells) :
-            offset = 5 - 2*count
-            rhs[ix] = rhs[ix + offset] * var_parity           
-                   
+    fill_inner_boundary(rhs, dx, N, r_is_logarithmic)
+    
+    # t5 = time.time()
+    # print("Fill boundaries done in ", t5 - t4) 
+                
     #################################################################################################### 
     
-    #print("time at t= ", t_i, " , ", rhs_u, rhs_v)
+    # Some code for checking timing and progress output
     
-    end = time.time()
-    #print("time at t= ", t_i, " is, ", end-start)
+    # state is a list containing last updated time t:
+    # state = [last_t, dt for progress bar]
+    # its values can be carried between function calls throughout the ODE integration
+    last_t, deltat = time_state
     
+    # call update(n) here where n = (t - last_t) / dt
+    n = int((t_i - last_t)/deltat)
+    progress_bar.update(n)
+    # we need this to take into account that n is a rounded number:
+    time_state[0] = last_t + deltat * n
+    
+    # t6 = time.time()
+    # print("Check timing and output ", t6 - t5) 
+    
+    # end_time = time.time()
+    # print("total rhs time at t= ", t_i, " is, ", end_time-start_time)
+        
+    ####################################################################################################
+    
+    #Finally return the rhs
     return rhs
